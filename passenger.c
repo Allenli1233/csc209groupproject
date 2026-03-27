@@ -25,9 +25,7 @@ int main(int argc, char *argv[]) {
     const char *name = argv[3];
 
     int fd = connect_to_server(server_ip, port);
-    if (fd < 0) {
-        return 1;
-    }
+    if (fd < 0) return 1;
 
     ride_msg_t msg;
     memset(&msg, 0, sizeof(msg));
@@ -120,9 +118,9 @@ int main(int argc, char *argv[]) {
                     is_matched = 1;
                     printf("Matched with driver: %s (order %d)\n", msg.name, msg.order_id);
                 } else if (msg.type == MSG_DRIVER_ARRIVED) {
-                    printf("\n🔔 [NOTIFICATION]: %s\n", msg.payload);
+                    printf("\n [NOTIFICATION]: %s\n", msg.payload);
                 } else if (msg.type == MSG_PICKUP_CONFIRM) {
-                    printf("\n🚗 [TRIP UPDATE]: %s\n", msg.payload);
+                    printf("\n [TRIP UPDATE]: %s\n", msg.payload);
                 } else if (msg.type == MSG_UPDATE_POS) {
                     printf("Driver %s position update: (%.1f, %.1f)\n", msg.name, msg.x, msg.y);
                 } else if (msg.type == MSG_BILL) {
@@ -155,7 +153,7 @@ int main(int argc, char *argv[]) {
                     send_msg(fd, &tip_msg);
                     ride_active = 0;
                 } else if (msg.type == MSG_ERROR) {
-                    printf("ERROR: %s\n", msg.payload);
+                    printf("\n[SYSTEM]: %s\n", msg.payload);
                     ride_active = 0;
                 }
             }
