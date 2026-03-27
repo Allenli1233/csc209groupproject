@@ -102,7 +102,7 @@ int main(int argc, char *argv[]) {
                         arrived.type = MSG_ARRIVED;
                         arrived.order_id = msg.order_id;
                         send_msg(fd, &arrived);
-                        printf("Trip completed. Returning to IDLE status.\n");
+                        printf("Trip completed. Bill sent to passenger. Returning to IDLE.\n");
                         break;
                     } else if (cmd[0] == 'u') {
                         float x, y;

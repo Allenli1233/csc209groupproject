@@ -11,6 +11,7 @@
 #include <math.h>
 
 #define MAX_CLIENTS 32
+#define FARE_PER_UNIT 0.8f
 
 typedef struct {
     char name[LOC_LEN];
@@ -36,7 +37,8 @@ typedef struct {
     float x;
     float y;
     int current_order_id;
-    int peer_fd;   
+    int peer_fd;
+    float trip_dist;
 } client_t;
 
 static client_t clients[MAX_CLIENTS];
@@ -51,6 +53,7 @@ static void reset_client(client_t *c) {
     c->y = 0.0f;
     c->current_order_id = 0;
     c->peer_fd = -1;
+    c->trip_dist = 0.0f;
 }
 
 static void init_clients(void) {
@@ -83,6 +86,7 @@ static void set_client_idle(int idx) {
     clients[idx].status = STATUS_IDLE;
     clients[idx].current_order_id = 0;
     clients[idx].peer_fd = -1;
+    clients[idx].trip_dist = 0.0f;
 }
 
 static void send_error_msg(int fd, const char *text) {
@@ -121,18 +125,15 @@ static void handle_login(int idx, const ride_msg_t *msg) {
     clients[idx].status = STATUS_IDLE;
     strncpy(clients[idx].name, msg->name, NAME_LEN - 1);
     clients[idx].name[NAME_LEN - 1] = '\0';
-    
     if (clients[idx].role == ROLE_DRIVER) {
         clients[idx].x = msg->x;
         clients[idx].y = msg->y;
     }
-
     printf("Client fd=%d logged in as %s (%s) at pos (%.1f, %.1f)\n",
            clients[idx].fd,
            clients[idx].name,
            clients[idx].role == ROLE_DRIVER ? "driver" : "passenger",
            clients[idx].x, clients[idx].y);
-
     send_login_ack(clients[idx].fd);
 }
 
@@ -147,48 +148,52 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     }
 
     float px = -1.0f, py = -1.0f;
+    float dx = -1.0f, dy = -1.0f;
+
     for (size_t i = 0; i < MAP_SIZE; i++) {
         if (strcmp(city_map[i].name, msg->pickup) == 0) {
             px = city_map[i].x;
             py = city_map[i].y;
-            break;
+        }
+        if (strcmp(city_map[i].name, msg->dropoff) == 0) {
+            dx = city_map[i].x;
+            dy = city_map[i].y;
         }
     }
 
-    if (px < 0) {
-        send_error_msg(clients[idx].fd, "Unknown pickup location.");
+    if (px < 0 || dx < 0) {
+        send_error_msg(clients[idx].fd, "Unknown pickup or dropoff location.");
         return;
     }
 
-    printf("\n--- Dispatching Logic for Passenger: %s ---\n", clients[idx].name);
-    printf("Pickup Location: %s (%.1f, %.1f)\n", msg->pickup, px, py);
+    float trip_dist = sqrtf(powf(dx - px, 2) + powf(dy - py, 2));
+    clients[idx].trip_dist = trip_dist;
 
     int driver_idx = -1;
     float min_dist = -1.0f;
 
+    printf("\n--- Dispatching Logic for Passenger: %s ---\n", clients[idx].name);
+    printf("Pickup: %s (%.1f, %.1f) | Dropoff: %s (%.1f, %.1f) | Trip Distance: %.2f\n", 
+           msg->pickup, px, py, msg->dropoff, dx, dy, trip_dist);
+
     for (int i = 0; i < MAX_CLIENTS; i++) {
         if (clients[i].fd != -1 && clients[i].role == ROLE_DRIVER && clients[i].status == STATUS_IDLE) {
-            float dx = clients[i].x - px;
-            float dy = clients[i].y - py;
-            float dist = sqrtf(dx*dx + dy*dy);
-            
-            printf("Checking Driver: %s | Pos: (%.1f, %.1f) | Distance: %.2f\n", 
-                   clients[i].name, clients[i].x, clients[i].y, dist);
-
-            if (driver_idx == -1 || dist < min_dist) {
-                min_dist = dist;
+            float dist_to_pickup = sqrtf(powf(clients[i].x - px, 2) + powf(clients[i].y - py, 2));
+            printf("Checking Driver: %s | Pos: (%.1f, %.1f) | Dist to Pickup: %.2f\n", 
+                   clients[i].name, clients[i].x, clients[i].y, dist_to_pickup);
+            if (driver_idx == -1 || dist_to_pickup < min_dist) {
+                min_dist = dist_to_pickup;
                 driver_idx = i;
             }
         }
     }
 
     if (driver_idx == -1) {
-        printf("Result: No idle driver available.\n");
         send_error_msg(clients[idx].fd, "No idle driver available.");
         return;
     }
 
-    printf("Result: Selected Best Driver -> %s (Dist: %.2f)\n", clients[driver_idx].name, min_dist);
+    printf("Result: Selected Best Driver -> %s (Wait Dist: %.2f)\n", clients[driver_idx].name, min_dist);
 
     int order_id = next_order_id++;
     clients[idx].status = STATUS_WAITING;
@@ -206,18 +211,13 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     strncpy(dispatch_msg.name, clients[idx].name, NAME_LEN - 1);
     strncpy(dispatch_msg.pickup, msg->pickup, LOC_LEN - 1);
     strncpy(dispatch_msg.dropoff, msg->dropoff, LOC_LEN - 1);
-
     send_msg(clients[driver_idx].fd, &dispatch_msg);
 }
 
 static void handle_accept(int idx) {
-    if (clients[idx].role != ROLE_DRIVER) {
-        send_error_msg(clients[idx].fd, "Only drivers can accept dispatches.");
-        return;
-    }
+    if (clients[idx].role != ROLE_DRIVER) return;
     int passenger_idx = find_client_by_fd(clients[idx].peer_fd);
     if (passenger_idx == -1) {
-        send_error_msg(clients[idx].fd, "Passenger no longer available.");
         set_client_idle(idx);
         return;
     }
@@ -232,10 +232,7 @@ static void handle_accept(int idx) {
 }
 
 static void handle_reject(int idx) {
-    if (clients[idx].role != ROLE_DRIVER) {
-        send_error_msg(clients[idx].fd, "Only drivers can reject dispatches.");
-        return;
-    }
+    if (clients[idx].role != ROLE_DRIVER) return;
     int passenger_idx = find_client_by_fd(clients[idx].peer_fd);
     if (passenger_idx != -1) {
         send_error_msg(clients[passenger_idx].fd, "Driver rejected the order.");
@@ -257,17 +254,16 @@ static void handle_update_pos(int idx, const ride_msg_t *msg) {
 }
 
 static void handle_arrived(int idx) {
-    if (clients[idx].role != ROLE_DRIVER) {
-        send_error_msg(clients[idx].fd, "Only drivers can mark arrival.");
-        return;
-    }
+    if (clients[idx].role != ROLE_DRIVER) return;
     int passenger_idx = find_client_by_fd(clients[idx].peer_fd);
     if (passenger_idx != -1) {
+        float total_fare = clients[passenger_idx].trip_dist * FARE_PER_UNIT;
         ride_msg_t bill_msg;
         memset(&bill_msg, 0, sizeof(bill_msg));
         bill_msg.type = MSG_BILL;
         bill_msg.order_id = clients[idx].current_order_id;
-        strncpy(bill_msg.payload, "Trip completed. Flat fare: $25", PAYLOAD_LEN - 1);
+        snprintf(bill_msg.payload, PAYLOAD_LEN - 1, "Trip Done. Dist: %.2f, Fare: $%.2f", 
+                 clients[passenger_idx].trip_dist, total_fare);
         send_msg(clients[passenger_idx].fd, &bill_msg);
         set_client_idle(passenger_idx);
     }

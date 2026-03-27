@@ -93,7 +93,7 @@ int main(int argc, char *argv[]) {
             } else if (msg.type == MSG_UPDATE_POS) {
                 printf("Driver %s position update: (%.1f, %.1f)\n", msg.name, msg.x, msg.y);
             } else if (msg.type == MSG_BILL) {
-                printf("BILL: %s\n", msg.payload);
+                printf("\n>>> %s\n", msg.payload);
                 ride_active = 0;
             } else if (msg.type == MSG_ERROR) {
                 printf("ERROR: %s\n", msg.payload);
