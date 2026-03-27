@@ -130,16 +130,14 @@ static void handle_login(int idx, const ride_msg_t *msg) {
         clients[idx].y = msg->y;
     }
     printf("Client fd=%d logged in as %s (%s) at pos (%.1f, %.1f)\n",
-           clients[idx].fd,
-           clients[idx].name,
+           clients[idx].fd, clients[idx].name,
            clients[idx].role == ROLE_DRIVER ? "driver" : "passenger",
            clients[idx].x, clients[idx].y);
     send_login_ack(clients[idx].fd);
 }
 
 static void handle_ride_request(int idx, const ride_msg_t *msg) {
-    if (clients[idx].role != ROLE_PASSENGER) return;
-    if (clients[idx].status != STATUS_IDLE) return;
+    if (clients[idx].role != ROLE_PASSENGER || clients[idx].status != STATUS_IDLE) return;
 
     float px = -1.0f, py = -1.0f, dx = -1.0f, dy = -1.0f;
     for (size_t i = 0; i < MAP_SIZE; i++) {
@@ -148,8 +146,7 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     }
     if (px < 0 || dx < 0) { send_error_msg(clients[idx].fd, "Unknown location."); return; }
 
-    float trip_dist = sqrtf(powf(dx - px, 2) + powf(dy - py, 2));
-    clients[idx].trip_dist = trip_dist;
+    clients[idx].trip_dist = sqrtf(powf(dx - px, 2) + powf(dy - py, 2));
 
     int driver_idx = -1;
     float min_dist = -1.0f;
@@ -179,11 +176,29 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     send_msg(clients[driver_idx].fd, &d_msg);
 }
 
+static void handle_cancel_ride(int idx) {
+    if (clients[idx].role != ROLE_PASSENGER) return;
+
+    int d_fd = clients[idx].peer_fd;
+    if (d_fd != -1) {
+        int d_idx = find_client_by_fd(d_fd);
+        if (d_idx != -1) {
+            send_error_msg(clients[d_idx].fd, "Passenger cancelled the request.");
+            set_client_idle(d_idx); 
+            
+            printf("Driver %s (fd %d) is now IDLE due to passenger cancellation.\n", 
+                   clients[d_idx].name, clients[d_idx].fd);
+        }
+    }
+    set_client_idle(idx);
+    printf("Passenger %s cancelled the request and is now IDLE.\n", clients[idx].name);
+}
+
 static void handle_accept(int idx) {
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx == -1) { set_client_idle(idx); return; }
-    clients[idx].status = STATUS_ON_TRIP;
-    clients[p_idx].status = STATUS_ON_TRIP;
+    clients[idx].status = STATUS_GOING_TO_PICKUP;
+    clients[p_idx].status = STATUS_GOING_TO_PICKUP;
     ride_msg_t m_msg;
     memset(&m_msg, 0, sizeof(m_msg));
     m_msg.type = MSG_MATCHED;
@@ -202,13 +217,32 @@ static void handle_reject(int idx) {
 }
 
 static void handle_update_pos(int idx, const ride_msg_t *msg) {
-    clients[idx].x = msg->x; 
-    clients[idx].y = msg->y;
+    clients[idx].x = msg->x; clients[idx].y = msg->y;
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx != -1) {
         ride_msg_t f_msg = *msg;
         strncpy(f_msg.name, clients[idx].name, NAME_LEN - 1);
         send_msg(clients[p_idx].fd, &f_msg);
+    }
+}
+
+static void handle_driver_arrived(int idx, const ride_msg_t *msg) {
+    int p_idx = find_client_by_fd(clients[idx].peer_fd);
+    if (p_idx != -1) {
+        ride_msg_t notice = *msg;
+        strncpy(notice.payload, "Your driver has arrived at the pickup location!", PAYLOAD_LEN - 1);
+        send_msg(clients[p_idx].fd, &notice);
+    }
+}
+
+static void handle_pickup_confirm(int idx, const ride_msg_t *msg) {
+    int p_idx = find_client_by_fd(clients[idx].peer_fd);
+    if (p_idx != -1) {
+        clients[idx].status = STATUS_IN_PROGRESS;
+        clients[p_idx].status = STATUS_IN_PROGRESS;
+        ride_msg_t notice = *msg;
+        strncpy(notice.payload, "Passenger picked up. Trip in progress!", PAYLOAD_LEN - 1);
+        send_msg(clients[p_idx].fd, &notice);
     }
 }
 
@@ -232,17 +266,13 @@ static void handle_tip_selection(int idx, const ride_msg_t *msg) {
     int d_fd = clients[idx].peer_fd;
     float fare = msg->fare;
     float tip = msg->tip;
-
     ride_msg_t s_msg;
     memset(&s_msg, 0, sizeof(s_msg));
     s_msg.type = MSG_FINAL_SETTLEMENT;
     s_msg.fare = fare;
     s_msg.tip = tip;
-
     int d_idx = find_client_by_fd(d_fd);
-    if (d_idx != -1) {
-        send_msg(clients[d_idx].fd, &s_msg);
-    }
+    if (d_idx != -1) send_msg(clients[d_idx].fd, &s_msg);
     send_msg(clients[idx].fd, &s_msg);
     set_client_idle(idx);
 }
@@ -251,9 +281,12 @@ static void handle_message(int idx, const ride_msg_t *msg) {
     switch (msg->type) {
         case MSG_LOGIN: handle_login(idx, msg); break;
         case MSG_RIDE_REQUEST: handle_ride_request(idx, msg); break;
+        case MSG_CANCEL_RIDE: handle_cancel_ride(idx); break;
         case MSG_ACCEPT: handle_accept(idx); break;
         case MSG_REJECT: handle_reject(idx); break;
         case MSG_UPDATE_POS: handle_update_pos(idx, msg); break;
+        case MSG_DRIVER_ARRIVED: handle_driver_arrived(idx, msg); break;
+        case MSG_PICKUP_CONFIRM: handle_pickup_confirm(idx, msg); break;
         case MSG_ARRIVED: handle_arrived(idx); break;
         case MSG_TIP_SELECTION: handle_tip_selection(idx, msg); break;
         case MSG_LOGOUT: remove_client(idx); break;
@@ -262,10 +295,7 @@ static void handle_message(int idx, const ride_msg_t *msg) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        fprintf(stderr, "Usage: %s <port>\n", argv[0]);
-        return 1;
-    }
+    if (argc != 2) return 1;
     uint16_t port = (uint16_t)atoi(argv[1]);
     int l_fd = setup_server_socket(port);
     if (l_fd < 0) return 1;
