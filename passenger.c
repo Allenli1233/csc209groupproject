@@ -93,7 +93,44 @@ int main(int argc, char *argv[]) {
             } else if (msg.type == MSG_UPDATE_POS) {
                 printf("Driver %s position update: (%.1f, %.1f)\n", msg.name, msg.x, msg.y);
             } else if (msg.type == MSG_BILL) {
+                float base_fare = msg.fare;
                 printf("\n>>> %s\n", msg.payload);
+                
+                printf("\nSelect Tip Percentage:\n");
+                printf("1) No Tip (0%%)\n");
+                printf("2) 5%%\n");
+                printf("3) 10%%\n");
+                printf("4) 12%%\n");
+                printf("5) Other Amount\n");
+                printf("Selection: ");
+                
+                char choice[16];
+                float tip_val = 0.0f;
+                if (fgets(choice, sizeof(choice), stdin) != NULL) {
+                    int c = atoi(choice);
+                    if (c == 2) tip_val = base_fare * 0.05f;
+                    else if (c == 3) tip_val = base_fare * 0.10f;
+                    else if (c == 4) tip_val = base_fare * 0.12f;
+                    else if (c == 5) {
+                        printf("Enter custom tip amount: ");
+                        char custom[16];
+                        if (fgets(custom, sizeof(custom), stdin) != NULL) {
+                            tip_val = atof(custom);
+                        }
+                    }
+                }
+
+                printf("Final Total: $%.2f (Fare: $%.2f + Tip: $%.2f)\n", 
+                       base_fare + tip_val, base_fare, tip_val);
+
+                ride_msg_t tip_msg;
+                memset(&tip_msg, 0, sizeof(tip_msg));
+                tip_msg.type = MSG_TIP_SELECTION;
+                tip_msg.order_id = msg.order_id;
+                tip_msg.fare = base_fare;
+                tip_msg.tip = tip_val;
+                send_msg(fd, &tip_msg);
+                
                 ride_active = 0;
             } else if (msg.type == MSG_ERROR) {
                 printf("ERROR: %s\n", msg.payload);

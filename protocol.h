@@ -17,7 +17,8 @@ typedef enum {
     STATUS_IDLE = 0,
     STATUS_WAITING = 1,
     STATUS_ASSIGNED = 2,
-    STATUS_ON_TRIP = 3
+    STATUS_ON_TRIP = 3,
+    STATUS_SETTLING = 4
 } status_t;
 
 typedef enum {
@@ -31,18 +32,22 @@ typedef enum {
     MSG_MATCHED,
     MSG_ARRIVED,
     MSG_BILL,
+    MSG_TIP_SELECTION,
+    MSG_FINAL_SETTLEMENT,
     MSG_ERROR,
     MSG_LOGOUT
 } msg_type_t;
 
 typedef struct {
-    int32_t type;       // msg_type_t
+    int32_t type;
     int32_t user_id;
-    int32_t role;       // role_t
+    int32_t role;
     int32_t order_id;
-    int32_t status;     // status_t
+    int32_t status;
     float x;
     float y;
+    float fare;
+    float tip;
     char name[NAME_LEN];
     char pickup[LOC_LEN];
     char dropoff[LOC_LEN];

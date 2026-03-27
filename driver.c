@@ -88,7 +88,8 @@ int main(int argc, char *argv[]) {
                 reply.order_id = msg.order_id;
                 send_msg(fd, &reply);
 
-                while (1) {
+                int on_trip = 1;
+                while (on_trip) {
                     char cmd[64];
                     printf("\n[ON TRIP] Enter command [u x y] or [a]: ");
                     if (fgets(cmd, sizeof(cmd), stdin) == NULL) {
@@ -102,8 +103,8 @@ int main(int argc, char *argv[]) {
                         arrived.type = MSG_ARRIVED;
                         arrived.order_id = msg.order_id;
                         send_msg(fd, &arrived);
-                        printf("Trip completed. Bill sent to passenger. Returning to IDLE.\n");
-                        break;
+                        printf("Trip completed! Returning to IDLE status to wait for new dispatches.\n");
+                        on_trip = 0;
                     } else if (cmd[0] == 'u') {
                         float x, y;
                         if (sscanf(cmd, "u %f %f", &x, &y) == 2) {
@@ -131,6 +132,14 @@ int main(int argc, char *argv[]) {
                 send_msg(fd, &reply);
                 printf("Order rejected. Returning to IDLE status.\n");
             }
+
+        } else if (msg.type == MSG_FINAL_SETTLEMENT) {
+            float driver_earning = (msg.fare * 0.6f) + msg.tip;
+            printf("\n>>> [INCOME REPORT] Previous Trip Settle Detail <<<\n");
+            printf("Total Fare: $%.2f\n", msg.fare);
+            printf("Platform Fee (40%%): -$%.2f\n", msg.fare * 0.4f);
+            printf("Passenger Tip: $%.2f\n", msg.tip);
+            printf("Your Total Earning: $%.2f\n", driver_earning);
 
         } else if (msg.type == MSG_ERROR) {
             printf("\nERROR: %s\n", msg.payload);
