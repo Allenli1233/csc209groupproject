@@ -1,94 +1,113 @@
-Ride-Sharing Dispatch System
-A concurrent, C-based ride-sharing simulation using TCP Sockets and I/O Multiplexing (select). This system allows passengers to request rides and drivers to accept them, featuring real-time location tracking and robust error handling for disconnected peers.
+Ride Sharing Dispatch System v2.0
 
-Features：
+A concurrent C based ride sharing simulation using TCP Sockets and IO Multiplexing select. This system simulates a real world hailing service with proximity based dispatching and distance based dynamic pricing.
 
-1. Centralized Dispatch Server: Handles multiple concurrent clients using a non-blocking select() loop.
+New Logic Updates
 
-2. Interaction Based On Role: Distinct logic for Drivers and Passengers.
+Proximity Based Dispatch
+Instead of a linear scan the server now calculates the Euclidean distance between all IDLE drivers and the passenger’s PICKUP location assigning the nearest available driver
 
-3. Real Time Tracking: Drivers can stream coordinates to matched passengers.
+Dynamic Pricing
+Fares are no longer flat The system calculates the straight line distance from PICKUP to DROPOFF and charges a rate of 0.80 per unit distance
 
-4. State Machine Management: Prevents race conditions by locking driver status during dispatch.
+System Geography and Reference Map
 
-5. Fault Tolerance: Automatically notifies and resets clients if their matched peer disconnects unexpectedly.
+The simulation operates on a 100 by 100 coordinate grid Passengers must enter locations from the following supported reference table
+
+Location Name Airport
+Coordinates 10.0 10.0
+Description Bottom Left Transit Hub
+
+Location Name Hotel
+Coordinates 50.0 50.0
+Description Center Business District
+
+Location Name Station
+Coordinates 20.0 80.0
+Description Top Left Train Station
+
+Location Name University
+Coordinates 70.0 10.0
+Description Bottom Right Academic Zone
+
+Location Name Mall
+Coordinates 90.0 90.0
+Description Top Right Shopping Center
+
+Driver Starting Positions
+Every driver is assigned a randomized coordinate upon login to simulate a distributed fleet across the city
+
+Core Features
+
+Smart Dispatcher
+Uses the Pythagorean theorem d equals sqrt delta x squared plus delta y squared to find the optimal driver
+
+Dynamic Billing
+Real time fare calculation based on a 0.8 per unit rate
+
+Real Time Tracking
+Drivers stream x y coordinates to passengers during the ON TRIP state
+
+Persistent Loops
+Both clients remain active after a trip completes allowing for immediate re requesting or re dispatching
+
+Fault Tolerance
+Peer disconnection detection with automatic state reset for the remaining party
 
 Compilation
-The project includes a Makefile for easy compilation.
 
-Bash
-# Compile all components (dispatch, driver, passenger)
+The project requires the math library lm for distance calculations
+
+Compile all components dispatch driver passenger
 make
 
-# Clean build files
+Clean build files
 make clean
 
+System Scenarios and Testing
 
-System Scenarios & Testing
-To fully understand the system, run the following test cases in separate terminals. 
+Scenario A Proximity Dispatching
 
-Scenario A: Full Workflow (One Driver, Multiple Passengers)
-Goal: Verify sequential order processing and message relaying.
+Goal Verify the server selects the closest driver
 
-Setup: Launch the dispatch server, then login Driver_1.
+Launch the Dispatch Server
 
-Action: Login Passenger_A and Passenger_B.
+Login Driver A randomly placed at 10 15 and Driver B randomly placed at 80 85
 
-Sequential Requests:
+Login Passenger and enter Pickup Airport Coords 10 10
 
-Passenger_A requests a ride.
+Observation The Server logs will show distance calculations for both drivers Driver A will receive the MSG DISPATCH JOB because they are significantly closer to the Airport
 
-Driver_1 accepts the request and completes the trip by entering a.
+Scenario B Dynamic Pricing Logic
 
-After the first trip is billed and completed, Passenger_B requests a ride.
+Goal Verify fare calculation accuracy
 
-Logic: The server correctly handles the message lifecycle: MSG_RIDE_REQUEST → MSG_DISPATCH_JOB → MSG_ACCEPT → MSG_BILL.
+Passenger requests a ride from Airport 10 10 to Hotel 50 50
 
-Observation: The system successfully cycles the driver back to an idle state after each completion, allowing for continuous sequential service.
+The trip distance is calculated as sqrt 40 squared plus 40 squared approximately 56.57
 
-Scenario B: Priority Testing (Static Dispatch)
-Goal: Observe the server's driver selection strategy.
+Upon arrival a the passenger receives a bill
 
-Procedure: Launch two drivers (Driver_1 and Driver_2). Login one passenger and request a ride.
+Calculation 56.57 times 0.8 equals 45.26
 
-Logic: The server performs a linear scan of the client array using a loop: for (int i = 0; i < MAX_CLIENTS; i++).
+Observation Passenger terminal displays BILL Trip Done Dist 56.57 Fare 45.26
 
-Observation: The driver who logged in first (occupying the lower array index) will always receive the dispatch first. Driver_2 remains idle until Driver_1 is either busy or disconnected.
+Scenario C Post Trip State Reset
 
-Scenario C: Peer Disconnection
-Goal: Verify system cleanup when a connection is lost during an active trip.
+Goal Ensure system longevity without restarting
 
-Procedure: Start a trip so the status is ON_TRIP.
+Complete a trip as described in Scenario B
 
-Trigger: Force close the Driver terminal
+Observation
 
-Logic:
+Driver Returns to STATUS IDLE and waits for new dispatches
 
-The server's select() function detects the closed socket.
+Passenger Returns to the New Ride Request prompt to enter a new destination
 
-The server identifies the matched peer_fd associated with the passenger.
+Technical Implementation Details
 
-The server sends a MSG_ERROR specifically to that passenger.
+Server Uses a city map lookup table and sqrtf for geometry
 
-Observation: The passenger displays ERROR: Matched peer disconnected. Their status is immediately reset to IDLE, allowing them to request a new ride without restarting the application.
+Driver Uses srand time NULL xor getpid to ensure unique starting coordinates for multiple instances on the same host
 
-Scenario D: Race Condition and Resource Locking
-Goal: Verify the system handles multiple simultaneous requests when driver resources are limited.
-
-Setup: Login one driver and two passengers.
-
-Conflict: Both passengers send a MSG_RIDE_REQUEST at nearly the same time.
-
-Logic:
-
-The first request processed by the server assigns the driver and changes their status to STATUS_ASSIGNED.
-
-When the second request arrives, the find_idle_driver function scans the array but finds no drivers remaining in the STATUS_IDLE state.
-
-Observation:
-
-Passenger_A: Successfully matched with the driver.
-
-Passenger_B: Immediately receives ERROR: No idle driver available.
-
-Conclusion: This proves the STATUS_ASSIGNED flag acts as a logical lock, effectively preventing "double-booking" or race conditions.
+Protocol All distance and fare data is encapsulated in the payload buffer of the ride msg t structure
