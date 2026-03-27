@@ -6,6 +6,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/select.h>
+#include <sys/socket.h>  
+#include <netinet/in.h>  
 
 #define MAX_CLIENTS 32
 
