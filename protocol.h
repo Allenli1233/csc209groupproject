@@ -17,8 +17,9 @@ typedef enum {
     STATUS_IDLE = 0,
     STATUS_WAITING = 1,
     STATUS_ASSIGNED = 2,
-    STATUS_ON_TRIP = 3,
-    STATUS_SETTLING = 4
+    STATUS_GOING_TO_PICKUP = 3,
+    STATUS_IN_PROGRESS = 4,
+    STATUS_SETTLING = 5
 } status_t;
 
 typedef enum {
@@ -30,6 +31,8 @@ typedef enum {
     MSG_REJECT,
     MSG_UPDATE_POS,
     MSG_MATCHED,
+    MSG_DRIVER_ARRIVED,
+    MSG_PICKUP_CONFIRM,
     MSG_ARRIVED,
     MSG_BILL,
     MSG_TIP_SELECTION,

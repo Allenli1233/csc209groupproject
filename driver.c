@@ -91,30 +91,36 @@ int main(int argc, char *argv[]) {
                 int on_trip = 1;
                 while (on_trip) {
                     char cmd[64];
-                    printf("\n[ON TRIP] Enter command [u x y] or [a]: ");
+                    printf("\n[ON TRIP] [u x y]-Pos | [p]-Arrived Pickup | [s]-Picked Up | [a]-Arrived Dest: ");
                     if (fgets(cmd, sizeof(cmd), stdin) == NULL) {
                         break;
                     }
                     strip_newline(cmd);
 
-                    if (cmd[0] == 'a') {
-                        ride_msg_t arrived;
-                        memset(&arrived, 0, sizeof(arrived));
-                        arrived.type = MSG_ARRIVED;
-                        arrived.order_id = msg.order_id;
-                        send_msg(fd, &arrived);
+                    ride_msg_t trip_msg;
+                    memset(&trip_msg, 0, sizeof(trip_msg));
+                    trip_msg.order_id = msg.order_id;
+
+                    if (cmd[0] == 'p') {
+                        trip_msg.type = MSG_DRIVER_ARRIVED;
+                        send_msg(fd, &trip_msg);
+                        printf("Notification sent: Arrived at pickup location.\n");
+                    } else if (cmd[0] == 's') {
+                        trip_msg.type = MSG_PICKUP_CONFIRM;
+                        send_msg(fd, &trip_msg);
+                        printf("Notification sent: Passenger is on board. Trip started!\n");
+                    } else if (cmd[0] == 'a') {
+                        trip_msg.type = MSG_ARRIVED;
+                        send_msg(fd, &trip_msg);
                         printf("Trip completed! Returning to IDLE status to wait for new dispatches.\n");
                         on_trip = 0;
                     } else if (cmd[0] == 'u') {
                         float x, y;
                         if (sscanf(cmd, "u %f %f", &x, &y) == 2) {
-                            ride_msg_t update;
-                            memset(&update, 0, sizeof(update));
-                            update.type = MSG_UPDATE_POS;
-                            update.order_id = msg.order_id;
-                            update.x = x;
-                            update.y = y;
-                            send_msg(fd, &update);
+                            trip_msg.type = MSG_UPDATE_POS;
+                            trip_msg.x = x;
+                            trip_msg.y = y;
+                            send_msg(fd, &trip_msg);
                             printf("Position updated to (%.1f, %.1f).\n", x, y);
                         } else {
                             printf("Invalid format. Example: u 10 20\n");

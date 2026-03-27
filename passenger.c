@@ -90,6 +90,10 @@ int main(int argc, char *argv[]) {
 
             if (msg.type == MSG_MATCHED) {
                 printf("Matched with driver: %s (order %d)\n", msg.name, msg.order_id);
+            } else if (msg.type == MSG_DRIVER_ARRIVED) {
+                printf("\n🔔 [NOTIFICATION]: %s\n", msg.payload);
+            } else if (msg.type == MSG_PICKUP_CONFIRM) {
+                printf("\n🚗 [TRIP UPDATE]: %s\n", msg.payload);
             } else if (msg.type == MSG_UPDATE_POS) {
                 printf("Driver %s position update: (%.1f, %.1f)\n", msg.name, msg.x, msg.y);
             } else if (msg.type == MSG_BILL) {
