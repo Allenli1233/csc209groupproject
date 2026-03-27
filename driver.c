@@ -50,6 +50,7 @@ int main(int argc, char *argv[]) {
     printf("Driver login successful.\n");
 
     while (1) {
+        printf("\n[STATUS: IDLE] Waiting for new dispatch...\n");
         rc = recv_msg(fd, &msg);
         if (rc == 0) {
             printf("Server disconnected.\n");
@@ -61,7 +62,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (msg.type == MSG_DISPATCH_JOB) {
-            printf("\nNew dispatch received!\n");
+            printf("\n--- New Dispatch Received! ---\n");
             printf("Order ID: %d\n", msg.order_id);
             printf("Passenger: %s\n", msg.name);
             printf("Pickup: %s\n", msg.pickup);
@@ -82,7 +83,7 @@ int main(int argc, char *argv[]) {
 
                 while (1) {
                     char cmd[64];
-                    printf("Enter command [u x y] or [a]: ");
+                    printf("\n[ON TRIP] Enter command [u x y] or [a]: ");
                     if (fgets(cmd, sizeof(cmd), stdin) == NULL) {
                         break;
                     }
@@ -94,7 +95,7 @@ int main(int argc, char *argv[]) {
                         arrived.type = MSG_ARRIVED;
                         arrived.order_id = msg.order_id;
                         send_msg(fd, &arrived);
-                        printf("Trip completed.\n");
+                        printf("Trip completed. Returning to IDLE status.\n");
                         break;
                     } else if (cmd[0] == 'u') {
                         float x, y;
@@ -106,6 +107,7 @@ int main(int argc, char *argv[]) {
                             update.x = x;
                             update.y = y;
                             send_msg(fd, &update);
+                            printf("Position updated to (%.1f, %.1f).\n", x, y);
                         } else {
                             printf("Invalid format. Example: u 10 20\n");
                         }
@@ -120,12 +122,13 @@ int main(int argc, char *argv[]) {
                 reply.type = MSG_REJECT;
                 reply.order_id = msg.order_id;
                 send_msg(fd, &reply);
+                printf("Order rejected. Returning to IDLE status.\n");
             }
 
         } else if (msg.type == MSG_ERROR) {
-            printf("ERROR: %s\n", msg.payload);
+            printf("\nERROR: %s\n", msg.payload);
         } else {
-            printf("Received message type %d\n", msg.type);
+            printf("\nReceived message type %d\n", msg.type);
         }
     }
 

@@ -49,56 +49,58 @@ int main(int argc, char *argv[]) {
 
     printf("Passenger login successful.\n");
 
-    char pickup[LOC_LEN];
-    char dropoff[LOC_LEN];
-
-    printf("Enter pickup location: ");
-    if (fgets(pickup, sizeof(pickup), stdin) == NULL) {
-        close(fd);
-        return 1;
-    }
-    strip_newline(pickup);
-
-    printf("Enter dropoff location: ");
-    if (fgets(dropoff, sizeof(dropoff), stdin) == NULL) {
-        close(fd);
-        return 1;
-    }
-    strip_newline(dropoff);
-
-    memset(&msg, 0, sizeof(msg));
-    msg.type = MSG_RIDE_REQUEST;
-    strncpy(msg.pickup, pickup, LOC_LEN - 1);
-    strncpy(msg.dropoff, dropoff, LOC_LEN - 1);
-
-    if (send_msg(fd, &msg) < 0) {
-        perror("send request");
-        close(fd);
-        return 1;
-    }
-
     while (1) {
-        rc = recv_msg(fd, &msg);
-        if (rc == 0) {
-            printf("Server disconnected.\n");
-            break;
-        }
-        if (rc < 0) {
-            perror("recv_msg");
+        char pickup[LOC_LEN];
+        char dropoff[LOC_LEN];
+
+        printf("\n--- New Ride Request ---\n");
+        printf("Enter pickup location (or 'exit' to quit): ");
+        if (fgets(pickup, sizeof(pickup), stdin) == NULL) break;
+        strip_newline(pickup);
+        
+        if (strcmp(pickup, "exit") == 0) break;
+
+        printf("Enter dropoff location: ");
+        if (fgets(dropoff, sizeof(dropoff), stdin) == NULL) break;
+        strip_newline(dropoff);
+
+        memset(&msg, 0, sizeof(msg));
+        msg.type = MSG_RIDE_REQUEST;
+        strncpy(msg.pickup, pickup, LOC_LEN - 1);
+        strncpy(msg.dropoff, dropoff, LOC_LEN - 1);
+
+        if (send_msg(fd, &msg) < 0) {
+            perror("send request");
             break;
         }
 
-        if (msg.type == MSG_MATCHED) {
-            printf("Matched with driver: %s (order %d)\n", msg.name, msg.order_id);
-        } else if (msg.type == MSG_UPDATE_POS) {
-            printf("Driver %s position update: (%.1f, %.1f)\n", msg.name, msg.x, msg.y);
-        } else if (msg.type == MSG_BILL) {
-            printf("BILL: %s\n", msg.payload);
-            break;
-        } else if (msg.type == MSG_ERROR) {
-            printf("ERROR: %s\n", msg.payload);
-        } else {
-            printf("Received message type %d\n", msg.type);
+        int ride_active = 1;
+        while (ride_active) {
+            rc = recv_msg(fd, &msg);
+            if (rc == 0) {
+                printf("Server disconnected.\n");
+                close(fd);
+                return 0;
+            }
+            if (rc < 0) {
+                perror("recv_msg");
+                close(fd);
+                return 1;
+            }
+
+            if (msg.type == MSG_MATCHED) {
+                printf("Matched with driver: %s (order %d)\n", msg.name, msg.order_id);
+            } else if (msg.type == MSG_UPDATE_POS) {
+                printf("Driver %s position update: (%.1f, %.1f)\n", msg.name, msg.x, msg.y);
+            } else if (msg.type == MSG_BILL) {
+                printf("BILL: %s\n", msg.payload);
+                ride_active = 0;
+            } else if (msg.type == MSG_ERROR) {
+                printf("ERROR: %s\n", msg.payload);
+                ride_active = 0;
+            } else {
+                printf("Received message type %d\n", msg.type);
+            }
         }
     }
 
