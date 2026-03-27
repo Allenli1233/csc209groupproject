@@ -176,6 +176,24 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     send_msg(clients[driver_idx].fd, &d_msg);
 }
 
+static void handle_cancel_ride(int idx) {
+    if (clients[idx].role != ROLE_PASSENGER) return;
+
+    int d_fd = clients[idx].peer_fd;
+    if (d_fd != -1) {
+        int d_idx = find_client_by_fd(d_fd);
+        if (d_idx != -1) {
+            send_error_msg(clients[d_idx].fd, "Passenger cancelled the request.");
+            set_client_idle(d_idx); 
+            
+            printf("Driver %s (fd %d) is now IDLE due to passenger cancellation.\n", 
+                   clients[d_idx].name, clients[d_idx].fd);
+        }
+    }
+    set_client_idle(idx);
+    printf("Passenger %s cancelled the request and is now IDLE.\n", clients[idx].name);
+}
+
 static void handle_accept(int idx) {
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx == -1) { set_client_idle(idx); return; }
@@ -263,6 +281,7 @@ static void handle_message(int idx, const ride_msg_t *msg) {
     switch (msg->type) {
         case MSG_LOGIN: handle_login(idx, msg); break;
         case MSG_RIDE_REQUEST: handle_ride_request(idx, msg); break;
+        case MSG_CANCEL_RIDE: handle_cancel_ride(idx); break;
         case MSG_ACCEPT: handle_accept(idx); break;
         case MSG_REJECT: handle_reject(idx); break;
         case MSG_UPDATE_POS: handle_update_pos(idx, msg); break;

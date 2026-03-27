@@ -26,6 +26,7 @@ typedef enum {
     MSG_LOGIN = 1,
     MSG_LOGIN_ACK,
     MSG_RIDE_REQUEST,
+    MSG_CANCEL_RIDE,
     MSG_DISPATCH_JOB,
     MSG_ACCEPT,
     MSG_REJECT,
