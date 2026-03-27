@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 
 static void strip_newline(char *s) {
     size_t n = strlen(s);
@@ -28,10 +29,16 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    srand(time(NULL) ^ getpid());
+    float start_x = (float)(rand() % 100);
+    float start_y = (float)(rand() % 100);
+
     ride_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = MSG_LOGIN;
     msg.role = ROLE_DRIVER;
+    msg.x = start_x;
+    msg.y = start_y;
     strncpy(msg.name, name, NAME_LEN - 1);
 
     if (send_msg(fd, &msg) < 0) {
@@ -47,7 +54,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("Driver login successful.\n");
+    printf("Driver login successful. Initial position: (%.1f, %.1f)\n", start_x, start_y);
 
     while (1) {
         printf("\n[STATUS: IDLE] Waiting for new dispatch...\n");
