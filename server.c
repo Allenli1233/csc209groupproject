@@ -262,7 +262,7 @@ static void handle_arrived(int idx) {
         memset(&bill_msg, 0, sizeof(bill_msg));
         bill_msg.type = MSG_BILL;
         bill_msg.order_id = clients[idx].current_order_id;
-        snprintf(bill_msg.payload, PAYLOAD_LEN - 1, "Trip Done. Dist: %.2f, Fare: $%.2f", 
+        snprintf(bill_msg.payload, PAYLOAD_LEN - 1, "Trip Done. Travel Dist: %.2f, Total Fare: $%.2f", 
                  clients[passenger_idx].trip_dist, total_fare);
         send_msg(clients[passenger_idx].fd, &bill_msg);
         set_client_idle(passenger_idx);
