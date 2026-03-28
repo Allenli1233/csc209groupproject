@@ -37,9 +37,20 @@ int main(int argc, char *argv[]) {
     msg.y = start_y;
     strncpy(msg.name, name, NAME_LEN - 1);
 
-    send_msg(fd, &msg);
-    recv_msg(fd, &msg);
-    printf("Driver login successful. Initial position: (%.1f, %.1f)\n", start_x, start_y);
+    if (send_msg(fd, &msg) < 0) {
+    perror("send login");
+    close(fd);
+    return 1;
+}
+
+int rc = recv_msg(fd, &msg);
+if (rc <= 0 || msg.type != MSG_LOGIN_ACK) {
+    fprintf(stderr, "Driver login failed\n");
+    close(fd);
+    return 1;
+}
+
+printf("Driver login successful. Initial position: (%.1f, %.1f)\n", start_x, start_y);
 
     while (1) {
         printf("\n[STATUS: IDLE] Waiting for dispatch... (Type 'exit' to logout): ");
@@ -60,7 +71,9 @@ int main(int argc, char *argv[]) {
                     ride_msg_t logout_msg;
                     memset(&logout_msg, 0, sizeof(logout_msg));
                     logout_msg.type = MSG_LOGOUT;
-                    send_msg(fd, &logout_msg);
+                    if (send_msg(fd, &logout_msg) < 0) {
+                        perror("send logout");
+                    }
                     printf("Logging out... Goodbye!\n");
                     break;
                 }
@@ -82,7 +95,7 @@ int main(int argc, char *argv[]) {
                 int order_cancelled = 0;
                 int accepted = 0;
 
-                while (1) {
+                while`(1) {
                     fd_set afds;
                     FD_ZERO(&afds);
                     FD_SET(STDIN_FILENO, &afds);

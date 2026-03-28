@@ -86,19 +86,29 @@ static void set_client_idle(int idx) {
     clients[idx].trip_dist = 0.0f;
 }
 
-static void send_error_msg(int fd, const char *text) {
+static int send_error_msg(int fd, const char *text) {
     ride_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = MSG_ERROR;
     strncpy(msg.payload, text, PAYLOAD_LEN - 1);
-    send_msg(fd, &msg);
+
+    if (send_msg(fd, &msg) < 0) {
+        perror("send MSG_ERROR");
+        return -1;
+    }
+    return 0;
 }
 
-static void send_login_ack(int fd) {
+static int send_login_ack(int fd) {
     ride_msg_t msg;
     memset(&msg, 0, sizeof(msg));
     msg.type = MSG_LOGIN_ACK;
-    send_msg(fd, &msg);
+
+    if (send_msg(fd, &msg) < 0) {
+        perror("send MSG_LOGIN_ACK");
+        return -1;
+    }
+    return 0;
 }
 
 static void remove_client(int idx) {
@@ -124,7 +134,10 @@ static void handle_login(int idx, const ride_msg_t *msg) {
         clients[idx].y = msg->y;
     }
     printf("Client fd=%d logged in as %s\n", clients[idx].fd, clients[idx].name);
-    send_login_ack(clients[idx].fd);
+if (send_login_ack(clients[idx].fd) < 0) {
+    remove_client(idx);
+    return;
+}
 }
 
 static void handle_ride_request(int idx, const ride_msg_t *msg) {
@@ -159,7 +172,11 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     strncpy(d_msg.name, clients[idx].name, NAME_LEN - 1);
     strncpy(d_msg.pickup, msg->pickup, LOC_LEN - 1);
     strncpy(d_msg.dropoff, msg->dropoff, LOC_LEN - 1);
-    send_msg(clients[driver_idx].fd, &d_msg);
+   if (send_msg(clients[driver_idx].fd, &d_msg) < 0) {
+    perror("send MSG_DISPATCH_JOB");
+    remove_client(driver_idx);
+    return;
+}
 }
 
 static void handle_cancel_ride(int idx) {
@@ -176,16 +193,38 @@ static void handle_cancel_ride(int idx) {
 }
 
 static void handle_accept(int idx) {
+    if (clients[idx].role != ROLE_DRIVER || clients[idx].status != STATUS_ASSIGNED) {
+        send_error_msg(clients[idx].fd, "Invalid ACCEPT message.");
+        return;
+    }
+
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
-    if (p_idx == -1) { set_client_idle(idx); return; }
+    if (p_idx == -1) {
+        set_client_idle(idx);
+        return;
+    }
+
+    if (clients[p_idx].role != ROLE_PASSENGER || clients[p_idx].status != STATUS_WAITING) {
+        send_error_msg(clients[idx].fd, "Passenger is not in waiting state.");
+        set_client_idle(idx);
+        return;
+    }
+
     clients[idx].status = STATUS_GOING_TO_PICKUP;
     clients[p_idx].status = STATUS_GOING_TO_PICKUP;
+
     ride_msg_t m_msg;
     memset(&m_msg, 0, sizeof(m_msg));
     m_msg.type = MSG_MATCHED;
     m_msg.order_id = clients[idx].current_order_id;
     strncpy(m_msg.name, clients[idx].name, NAME_LEN - 1);
-    send_msg(clients[p_idx].fd, &m_msg);
+
+    if (send_msg(clients[p_idx].fd, &m_msg) < 0) {
+        perror("send MSG_MATCHED");
+        remove_client(p_idx);
+        set_client_idle(idx);
+        return;
+    }
 }
 
 static void handle_reject(int idx) {
@@ -198,55 +237,146 @@ static void handle_reject(int idx) {
 }
 
 static void handle_update_pos(int idx, const ride_msg_t *msg) {
-    clients[idx].x = msg->x; clients[idx].y = msg->y;
+    if (clients[idx].role != ROLE_DRIVER) {
+        send_error_msg(clients[idx].fd, "Only drivers can update position.");
+        return;
+    }
+
+    if (clients[idx].status != STATUS_GOING_TO_PICKUP &&
+        clients[idx].status != STATUS_IN_PROGRESS) {
+        send_error_msg(clients[idx].fd, "Position update not allowed in current state.");
+        return;
+    }
+
+    clients[idx].x = msg->x;
+    clients[idx].y = msg->y;
+
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx != -1) {
         ride_msg_t f_msg = *msg;
         strncpy(f_msg.name, clients[idx].name, NAME_LEN - 1);
-        send_msg(clients[p_idx].fd, &f_msg);
+
+        if (send_msg(clients[p_idx].fd, &f_msg) < 0) {
+            perror("send MSG_UPDATE_POS");
+            remove_client(p_idx);
+            set_client_idle(idx);
+            return;
+        }
     }
 }
 
 static void handle_driver_arrived(int idx, const ride_msg_t *msg) {
+    if (clients[idx].role != ROLE_DRIVER || clients[idx].status != STATUS_GOING_TO_PICKUP) {
+        send_error_msg(clients[idx].fd, "Invalid DRIVER_ARRIVED message.");
+        return;
+    }
+
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx != -1) {
         ride_msg_t n = *msg;
-        strncpy(n.payload, "Your driver has arrived at the pickup location!", PAYLOAD_LEN-1);
-        send_msg(clients[p_idx].fd, &n);
+        strncpy(n.payload, "Your driver has arrived at the pickup location!", PAYLOAD_LEN - 1);
+
+        if (send_msg(clients[p_idx].fd, &n) < 0) {
+            perror("send MSG_DRIVER_ARRIVED");
+            remove_client(p_idx);
+            set_client_idle(idx);
+            return;
+        }
     }
 }
 
 static void handle_pickup_confirm(int idx, const ride_msg_t *msg) {
+    if (clients[idx].role != ROLE_DRIVER || clients[idx].status != STATUS_GOING_TO_PICKUP) {
+        send_error_msg(clients[idx].fd, "Invalid PICKUP_CONFIRM message.");
+        return;
+    }
+
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx != -1) {
+        if (clients[p_idx].role != ROLE_PASSENGER) {
+            send_error_msg(clients[idx].fd, "Invalid passenger peer.");
+            set_client_idle(idx);
+            return;
+        }
+
         clients[idx].status = STATUS_IN_PROGRESS;
         clients[p_idx].status = STATUS_IN_PROGRESS;
+
         ride_msg_t n = *msg;
-        strncpy(n.payload, "Passenger picked up. Trip in progress!", PAYLOAD_LEN-1);
-        send_msg(clients[p_idx].fd, &n);
+        strncpy(n.payload, "Passenger picked up. Trip in progress!", PAYLOAD_LEN - 1);
+
+        if (send_msg(clients[p_idx].fd, &n) < 0) {
+            perror("send MSG_PICKUP_CONFIRM");
+            remove_client(p_idx);
+            set_client_idle(idx);
+            return;
+        }
     }
 }
 
+
 static void handle_arrived(int idx) {
+    if (clients[idx].role != ROLE_DRIVER || clients[idx].status != STATUS_IN_PROGRESS) {
+        send_error_msg(clients[idx].fd, "Invalid ARRIVED message.");
+        return;
+    }
+1
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx != -1) {
+        if (clients[p_idx].role != ROLE_PASSENGER) {
+            send_error_msg(clients[idx].fd, "Invalid passenger peer.");
+            set_client_idle(idx);
+            return;
+        }
+
         float fare = clients[p_idx].trip_dist * FARE_PER_UNIT;
         clients[p_idx].status = STATUS_SETTLING;
-        ride_msg_t b; memset(&b, 0, sizeof(b));
-        b.type = MSG_BILL; b.fare = fare;
-        snprintf(b.payload, PAYLOAD_LEN-1, "Trip Done. Dist: %.2f, Fare: $%.2f", clients[p_idx].trip_dist, fare);
-        send_msg(clients[p_idx].fd, &b);
+
+        ride_msg_t b;
+        memset(&b, 0, sizeof(b));
+        b.type = MSG_BILL;
+        b.fare = fare;
+        snprintf(b.payload, PAYLOAD_LEN - 1,
+                 "Trip Done. Dist: %.2f, Fare: $%.2f",
+                 clients[p_idx].trip_dist, fare);
+
+        if (send_msg(clients[p_idx].fd, &b) < 0) {
+            perror("send MSG_BILL");
+            remove_client(p_idx);
+        }
     }
+
     set_client_idle(idx);
 }
 
 static void handle_tip_selection(int idx, const ride_msg_t *msg) {
+    if (clients[idx].role != ROLE_PASSENGER || clients[idx].status != STATUS_SETTLING) {
+        send_error_msg(clients[idx].fd, "Invalid tip selection state.");
+        return;
+    }
+
     int d_fd = clients[idx].peer_fd;
-    ride_msg_t s; memset(&s, 0, sizeof(s));
-    s.type = MSG_FINAL_SETTLEMENT; s.fare = msg->fare; s.tip = msg->tip;
+
+    ride_msg_t s;
+    memset(&s, 0, sizeof(s));
+    s.type = MSG_FINAL_SETTLEMENT;
+    s.fare = msg->fare;
+    s.tip = msg->tip;
+
     int d_idx = find_client_by_fd(d_fd);
-    if (d_idx != -1) send_msg(clients[d_idx].fd, &s);
-    send_msg(clients[idx].fd, &s);
+    if (d_idx != -1) {
+        if (send_msg(clients[d_idx].fd, &s) < 0) {
+            perror("send MSG_FINAL_SETTLEMENT to driver");
+            remove_client(d_idx);
+        }
+    }
+
+    if (send_msg(clients[idx].fd, &s) < 0) {
+        perror("send MSG_FINAL_SETTLEMENT to passenger");
+        remove_client(idx);
+        return;
+    }
+
     set_client_idle(idx);
 }
 
@@ -263,6 +393,9 @@ static void handle_message(int idx, const ride_msg_t *msg) {
         case MSG_ARRIVED: handle_arrived(idx); break;
         case MSG_TIP_SELECTION: handle_tip_selection(idx, msg); break;
         case MSG_LOGOUT: remove_client(idx); break;
+        default:
+            send_error_msg(clients[idx].fd, "Unknown message type.");
+            break;
     }
 }
 
