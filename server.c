@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 #include <sys/select.h>
 #include <sys/socket.h>  
@@ -19,11 +20,16 @@ typedef struct {
 } location_map_t;
 
 location_map_t city_map[] = {
-    {"Airport", 10.0, 10.0},
-    {"Hotel", 50.0, 50.0},
-    {"Station", 20.0, 80.0},
-    {"University", 70.0, 10.0},
-    {"Mall", 90.0, 90.0}
+    {"Pearson Airport", 10.0, 50.0},
+    {"Sheraton Hotel", 45.0, 40.0},
+    {"Scotiabank Arena", 46.0, 38.0},
+    {"UofT St George campus", 44.0, 45.0},
+    {"Eaton Centre", 47.0, 42.0},
+    {"Yorkdale", 30.0, 70.0},
+    {"CN Tower", 43.0, 37.0},
+    {"Scarborough Town Centre", 85.0, 80.0},
+    {"High Park", 25.0, 35.0},
+    {"NorthYork Centre", 55.0, 85.0}
 };
 
 #define MAP_SIZE (sizeof(city_map) / sizeof(location_map_t))
@@ -131,8 +137,8 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     if (clients[idx].role != ROLE_PASSENGER || clients[idx].status != STATUS_IDLE) return;
     float px = -1.0f, py = -1.0f, dx = -1.0f, dy = -1.0f;
     for (size_t i = 0; i < MAP_SIZE; i++) {
-        if (strcmp(city_map[i].name, msg->pickup) == 0) { px = city_map[i].x; py = city_map[i].y; }
-        if (strcmp(city_map[i].name, msg->dropoff) == 0) { dx = city_map[i].x; dy = city_map[i].y; }
+        if (strcasecmp(city_map[i].name, msg->pickup) == 0) { px = city_map[i].x; py = city_map[i].y; }
+        if (strcasecmp(city_map[i].name, msg->dropoff) == 0) { dx = city_map[i].x; dy = city_map[i].y; }
     }
     if (px < 0 || dx < 0) { send_error_msg(clients[idx].fd, "Unknown location."); return; }
     clients[idx].trip_dist = sqrtf(powf(dx - px, 2) + powf(dy - py, 2));
@@ -262,7 +268,10 @@ static void handle_message(int idx, const ride_msg_t *msg) {
         case MSG_PICKUP_CONFIRM: handle_pickup_confirm(idx, msg); break;
         case MSG_ARRIVED: handle_arrived(idx); break;
         case MSG_TIP_SELECTION: handle_tip_selection(idx, msg); break;
-        case MSG_LOGOUT: remove_client(idx); break;
+        case MSG_LOGOUT: 
+            printf("Client %s requested logout.\n", clients[idx].name);
+            remove_client(idx); 
+            break;
     }
 }
 
