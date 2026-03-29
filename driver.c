@@ -95,7 +95,7 @@ printf("Driver login successful. Initial position: (%.1f, %.1f)\n", start_x, sta
                 int order_cancelled = 0;
                 int accepted = 0;
 
-                while`(1) {
+                while(1) {
                     fd_set afds;
                     FD_ZERO(&afds);
                     FD_SET(STDIN_FILENO, &afds);
