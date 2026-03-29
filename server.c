@@ -65,6 +65,8 @@ static void reset_client(client_t *c) {
     c->trip_dist = 0.0f;
     c->tried_count = 0;
     memset(c->tried_drivers, 0, sizeof(c->tried_drivers));
+    c->saved_pickup[0] = '\0';
+    c->saved_dropoff[0] = '\0';
 }
 
 static void init_clients(void) {
@@ -97,6 +99,7 @@ static void set_client_idle(int idx) {
     clients[idx].peer_fd = -1;
     clients[idx].trip_dist = 0.0f;
     clients[idx].tried_count = 0;
+    memset(clients[idx].tried_drivers, 0, sizeof(clients[idx].tried_drivers));
 }
 
 static int send_error_msg(int fd, const char *text) {
@@ -139,18 +142,34 @@ static void remove_client(int idx) {
 }
 
 static void dispatch_to_next_driver(int p_idx) {
+    if (p_idx < 0 || p_idx >= MAX_CLIENTS) return;
+    if (clients[p_idx].fd == -1) return;
+    if (clients[p_idx].role != ROLE_PASSENGER) return;
+
     float px = -1.0f, py = -1.0f;
+
     for (size_t i = 0; i < MAP_SIZE; i++) {
         if (strcasecmp(city_map[i].name, clients[p_idx].saved_pickup) == 0) {
-            px = city_map[i].x; py = city_map[i].y;
+            px = city_map[i].x;
+            py = city_map[i].y;
             break;
         }
     }
 
+    if (px < 0 || py < 0) {
+        send_error_msg(clients[p_idx].fd, "Cannot re-dispatch: pickup location lost.");
+        set_client_idle(p_idx);
+        return;
+    }
+
     int driver_idx = -1;
     float min_dist = -1.0f;
+
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].fd != -1 && clients[i].role == ROLE_DRIVER && clients[i].status == STATUS_IDLE) {
+        if (clients[i].fd != -1 &&
+            clients[i].role == ROLE_DRIVER &&
+            clients[i].status == STATUS_IDLE) {
+
             int already_tried = 0;
             for (int j = 0; j < clients[p_idx].tried_count; j++) {
                 if (clients[p_idx].tried_drivers[j] == clients[i].fd) {
@@ -158,7 +177,10 @@ static void dispatch_to_next_driver(int p_idx) {
                     break;
                 }
             }
-            if (already_tried) continue;
+
+            if (already_tried) {
+                continue;
+            }
 
             float d = sqrtf(powf(clients[i].x - px, 2) + powf(clients[i].y - py, 2));
             if (driver_idx == -1 || d < min_dist) {
@@ -168,27 +190,39 @@ static void dispatch_to_next_driver(int p_idx) {
         }
     }
 
-    if (driver_idx != -1) {
-        clients[p_idx].status = STATUS_WAITING;
-        clients[p_idx].peer_fd = clients[driver_idx].fd;
-        clients[driver_idx].status = STATUS_ASSIGNED;
-        clients[driver_idx].current_order_id = clients[p_idx].current_order_id;
-        clients[driver_idx].peer_fd = clients[p_idx].fd;
-
-        ride_msg_t d_msg;
-        memset(&d_msg, 0, sizeof(d_msg));
-        d_msg.type = MSG_DISPATCH_JOB;
-        d_msg.order_id = clients[p_idx].current_order_id;
-        strncpy(d_msg.name, clients[p_idx].name, NAME_LEN - 1);
-        strncpy(d_msg.pickup, clients[p_idx].saved_pickup, LOC_LEN - 1);
-        strncpy(d_msg.dropoff, clients[p_idx].saved_dropoff, LOC_LEN - 1);
-        send_msg(clients[driver_idx].fd, &d_msg);
-        printf("Re-dispatching order %d to %s\n", d_msg.order_id, clients[driver_idx].name);
-    } else {
+    if (driver_idx == -1) {
         send_error_msg(clients[p_idx].fd, "No more available drivers.");
         set_client_idle(p_idx);
+        return;
     }
+
+    clients[p_idx].status = STATUS_WAITING;
+    clients[p_idx].peer_fd = clients[driver_idx].fd;
+
+    clients[driver_idx].status = STATUS_ASSIGNED;
+    clients[driver_idx].current_order_id = clients[p_idx].current_order_id;
+    clients[driver_idx].peer_fd = clients[p_idx].fd;
+
+    ride_msg_t d_msg;
+    memset(&d_msg, 0, sizeof(d_msg));
+    d_msg.type = MSG_DISPATCH_JOB;
+    d_msg.order_id = clients[p_idx].current_order_id;
+    strncpy(d_msg.name, clients[p_idx].name, NAME_LEN - 1);
+    strncpy(d_msg.pickup, clients[p_idx].saved_pickup, LOC_LEN - 1);
+    strncpy(d_msg.dropoff, clients[p_idx].saved_dropoff, LOC_LEN - 1);
+
+    if (send_msg(clients[driver_idx].fd, &d_msg) < 0) {
+        perror("send MSG_DISPATCH_JOB (re-dispatch)");
+        remove_client(driver_idx);
+        dispatch_to_next_driver(p_idx);
+        return;
+    }
+
+    printf("Re-dispatching order %d to driver %s\n",
+           d_msg.order_id, clients[driver_idx].name);
 }
+
+    
 
 static void handle_login(int idx, const ride_msg_t *msg) {
     clients[idx].role = (role_t)msg->role;
@@ -206,47 +240,107 @@ if (send_login_ack(clients[idx].fd) < 0) {
 }
 
 static void handle_ride_request(int idx, const ride_msg_t *msg) {
-    if (clients[idx].role != ROLE_PASSENGER || clients[idx].status != STATUS_IDLE) return;
-    float px = -1.0f, py = -1.0f, dx = -1.0f, dy = -1.0f;
-    for (size_t i = 0; i < MAP_SIZE; i++) {
-        if (strcasecmp(city_map[i].name, msg->pickup) == 0) { px = city_map[i].x; py = city_map[i].y; }
-        if (strcasecmp(city_map[i].name, msg->dropoff) == 0) { dx = city_map[i].x; dy = city_map[i].y; }
+    if (clients[idx].role != ROLE_PASSENGER || clients[idx].status != STATUS_IDLE) {
+        return;
     }
-    if (px < 0 || dx < 0) { send_error_msg(clients[idx].fd, "Unknown location."); return; }
-    
-    clients[idx].trip_dist = sqrtf(powf(dx - px, 2) + powf(dy - py, 2));
-    int driver_idx = -1;
-    float min_dist = -1.0f;
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].fd != -1 && clients[i].role == ROLE_DRIVER && clients[i].status == STATUS_IDLE) {
-            float d = sqrtf(powf(clients[i].x - px, 2) + powf(clients[i].y - py, 2));
-            if (driver_idx == -1 || d < min_dist) { min_dist = d; driver_idx = i; }
+
+    float px = -1.0f, py = -1.0f;
+    float dx = -1.0f, dy = -1.0f;
+
+    for (size_t i = 0; i < MAP_SIZE; i++) {
+        if (strcasecmp(city_map[i].name, msg->pickup) == 0) {
+            px = city_map[i].x;
+            py = city_map[i].y;
+        }
+        if (strcasecmp(city_map[i].name, msg->dropoff) == 0) {
+            dx = city_map[i].x;
+            dy = city_map[i].y;
         }
     }
-    if (driver_idx == -1) { send_error_msg(clients[idx].fd, "No idle driver."); return; }
+
+    if (px < 0 || dx < 0) {
+        send_error_msg(clients[idx].fd, "Unknown location.");
+        return;
+    }
+
+    strncpy(clients[idx].saved_pickup, msg->pickup, LOC_LEN - 1);
+    clients[idx].saved_pickup[LOC_LEN - 1] = '\0';
+
+    strncpy(clients[idx].saved_dropoff, msg->dropoff, LOC_LEN - 1);
+    clients[idx].saved_dropoff[LOC_LEN - 1] = '\0';
+
+    clients[idx].trip_dist = sqrtf(powf(dx - px, 2) + powf(dy - py, 2));
+
+    clients[idx].tried_count = 0;
+    memset(clients[idx].tried_drivers, 0, sizeof(clients[idx].tried_drivers));
+
+    int driver_idx = -1;
+    float min_dist = -1.0f;
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].fd != -1 &&
+            clients[i].role == ROLE_DRIVER &&
+            clients[i].status == STATUS_IDLE) {
+
+            float d = sqrtf(powf(clients[i].x - px, 2) + powf(clients[i].y - py, 2));
+            if (driver_idx == -1 || d < min_dist) {
+                min_dist = d;
+                driver_idx = i;
+            }
+        }
+    }
+
+    if (driver_idx == -1) {
+        send_error_msg(clients[idx].fd, "No idle driver.");
+        return;
+    }
+
     int order_id = next_order_id++;
     clients[idx].status = STATUS_WAITING;
     clients[idx].current_order_id = order_id;
     clients[idx].peer_fd = clients[driver_idx].fd;
+
     clients[driver_idx].status = STATUS_ASSIGNED;
     clients[driver_idx].current_order_id = order_id;
     clients[driver_idx].peer_fd = clients[idx].fd;
+
     ride_msg_t d_msg;
     memset(&d_msg, 0, sizeof(d_msg));
     d_msg.type = MSG_DISPATCH_JOB;
     d_msg.order_id = order_id;
     strncpy(d_msg.name, clients[idx].name, NAME_LEN - 1);
-    strncpy(d_msg.pickup, msg->pickup, LOC_LEN - 1);
-    strncpy(d_msg.dropoff, msg->dropoff, LOC_LEN - 1);
-   if (send_msg(clients[driver_idx].fd, &d_msg) < 0) {
+    strncpy(d_msg.pickup, clients[idx].saved_pickup, LOC_LEN - 1);
+    strncpy(d_msg.dropoff, clients[idx].saved_dropoff, LOC_LEN - 1);
+
+    if (send_msg(clients[driver_idx].fd, &d_msg) < 0) {
+    int bad_fd = clients[driver_idx].fd;
     perror("send MSG_DISPATCH_JOB");
-    remove_client(driver_idx);
+
+    if (clients[idx].tried_count < MAX_CLIENTS) {
+        clients[idx].tried_drivers[clients[idx].tried_count] = bad_fd;
+        clients[idx].tried_count++;
+    }
+
+    clients[idx].peer_fd = -1;
+
+    close(clients[driver_idx].fd);
+    reset_client(&clients[driver_idx]);
+
+    dispatch_to_next_driver(idx);
     return;
 }
 }
 
 static void handle_cancel_ride(int idx) {
-    if (clients[idx].role != ROLE_PASSENGER) return;
+    if (clients[idx].role != ROLE_PASSENGER) {
+        return;
+    }
+
+    if (clients[idx].status != STATUS_WAITING) {
+        send_error_msg(clients[idx].fd, "Cancel is only allowed before driver arrival.");
+        return;
+    }
+
     int d_fd = clients[idx].peer_fd;
     if (d_fd != -1) {
         int d_idx = find_client_by_fd(d_fd);
@@ -255,7 +349,10 @@ static void handle_cancel_ride(int idx) {
             set_client_idle(d_idx);
         }
     }
+
     set_client_idle(idx);
+    clients[idx].saved_pickup[0] = '\0';
+    clients[idx].saved_dropoff[0] = '\0';
 }
 
 static void handle_accept(int idx) {
@@ -294,14 +391,29 @@ static void handle_accept(int idx) {
 }
 
 static void handle_reject(int idx) {
-    int p_idx = find_client_by_fd(clients[idx].peer_fd);
-    if (p_idx != -1) {
-        clients[p_idx].tried_drivers[clients[p_idx].tried_count++] = clients[idx].fd;
-        set_client_idle(idx);
-        dispatch_to_next_driver(p_idx);
-    } else {
-        set_client_idle(idx);
+    if (clients[idx].role != ROLE_DRIVER || clients[idx].status != STATUS_ASSIGNED) {
+        send_error_msg(clients[idx].fd, "Invalid REJECT message.");
+        return;
     }
+
+    int p_idx = find_client_by_fd(clients[idx].peer_fd);
+    if (p_idx == -1) {
+        set_client_idle(idx);
+        return;
+    }
+
+    if (clients[p_idx].role != ROLE_PASSENGER || clients[p_idx].status != STATUS_WAITING) {
+        set_client_idle(idx);
+        return;
+    }
+
+    if (clients[p_idx].tried_count < MAX_CLIENTS) {
+        clients[p_idx].tried_drivers[clients[p_idx].tried_count] = clients[idx].fd;
+        clients[p_idx].tried_count++;
+    }
+
+    set_client_idle(idx);
+    dispatch_to_next_driver(p_idx);
 }
 
 static void handle_update_pos(int idx, const ride_msg_t *msg) {
@@ -388,7 +500,7 @@ static void handle_arrived(int idx) {
         send_error_msg(clients[idx].fd, "Invalid ARRIVED message.");
         return;
     }
-1
+
     int p_idx = find_client_by_fd(clients[idx].peer_fd);
     if (p_idx != -1) {
         if (clients[p_idx].role != ROLE_PASSENGER) {
@@ -446,6 +558,8 @@ static void handle_tip_selection(int idx, const ride_msg_t *msg) {
     }
 
     set_client_idle(idx);
+    clients[idx].saved_pickup[0] = '\0';
+    clients[idx].saved_dropoff[0] = '\0';
 }
 
 static void handle_message(int idx, const ride_msg_t *msg) {
