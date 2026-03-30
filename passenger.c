@@ -152,6 +152,8 @@ int main(int argc, char *argv[]) {
                     tip_msg.tip = tip_val;
                     send_msg(fd, &tip_msg);
                     ride_active = 0;
+                } else if (msg.type == MSG_QUEUED) {
+                    printf("\n[QUEUE]: %s\n", msg.payload);
                 } else if (msg.type == MSG_ERROR) {
                     printf("\n[SYSTEM]: %s\n", msg.payload);
                     ride_active = 0;

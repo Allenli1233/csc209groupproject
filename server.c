@@ -53,6 +53,36 @@ typedef struct {
 static client_t clients[MAX_CLIENTS];
 static int next_order_id = 1;
 
+static int wait_queue[MAX_CLIENTS];
+static int queue_head = 0;
+static int queue_tail = 0;
+static int queue_count = 0;
+
+static int dequeue_passenger(void) {
+    if (queue_count == 0) return -1;
+    int idx = wait_queue[queue_head];
+    queue_head = (queue_head + 1) % MAX_CLIENTS;
+    queue_count--;
+    return idx;
+}
+
+static void remove_from_queue(int idx) {
+    int new_queue[MAX_CLIENTS];
+    int new_count = 0;
+    int h = queue_head;
+    for (int i = 0; i < queue_count; i++) {
+        int q_idx = wait_queue[h];
+        h = (h + 1) % MAX_CLIENTS;
+        if (q_idx != idx) {
+            new_queue[new_count++] = q_idx;
+        }
+    }
+    memcpy(wait_queue, new_queue, sizeof(int) * new_count);
+    queue_head = 0;
+    queue_tail = new_count;
+    queue_count = new_count;
+}
+
 static void reset_client(client_t *c) {
     c->fd = -1;
     c->role = ROLE_NONE;
@@ -129,6 +159,9 @@ static int send_login_ack(int fd) {
 
 static void remove_client(int idx) {
     if (idx < 0 || idx >= MAX_CLIENTS || clients[idx].fd == -1) return;
+    if (clients[idx].status == STATUS_QUEUED) {
+        remove_from_queue(idx);
+    }
     int peer_fd = clients[idx].peer_fd;
     if (peer_fd != -1) {
         int peer_idx = find_client_by_fd(peer_fd);
@@ -139,6 +172,28 @@ static void remove_client(int idx) {
     }
     close(clients[idx].fd);
     reset_client(&clients[idx]);
+}
+
+static void enqueue_passenger(int idx) {
+    if (queue_count >= MAX_CLIENTS) {
+        send_error_msg(clients[idx].fd, "Queue is full. Please try again later.");
+        set_client_idle(idx);
+        return;
+    }
+    wait_queue[queue_tail] = idx;
+    queue_tail = (queue_tail + 1) % MAX_CLIENTS;
+    queue_count++;
+    clients[idx].status = STATUS_QUEUED;
+
+    ride_msg_t qmsg;
+    memset(&qmsg, 0, sizeof(qmsg));
+    qmsg.type = MSG_QUEUED;
+    snprintf(qmsg.payload, PAYLOAD_LEN - 1,
+             "No driver available. You are #%d in the waiting queue.", queue_count);
+    if (send_msg(clients[idx].fd, &qmsg) < 0) {
+        perror("send MSG_QUEUED");
+        remove_client(idx);
+    }
 }
 
 static void dispatch_to_next_driver(int p_idx) {
@@ -191,8 +246,8 @@ static void dispatch_to_next_driver(int p_idx) {
     }
 
     if (driver_idx == -1) {
-        send_error_msg(clients[p_idx].fd, "No more available drivers.");
         set_client_idle(p_idx);
+        enqueue_passenger(p_idx);
         return;
     }
 
@@ -222,7 +277,84 @@ static void dispatch_to_next_driver(int p_idx) {
            d_msg.order_id, clients[driver_idx].name);
 }
 
-    
+static void try_dispatch_from_queue(void) {
+    while (queue_count > 0) {
+        int p_idx = wait_queue[queue_head];
+
+        if (p_idx < 0 || p_idx >= MAX_CLIENTS ||
+            clients[p_idx].fd == -1 ||
+            clients[p_idx].status != STATUS_QUEUED) {
+            dequeue_passenger();
+            continue;
+        }
+
+        float px = -1.0f, py = -1.0f;
+        for (size_t i = 0; i < MAP_SIZE; i++) {
+            if (strcasecmp(city_map[i].name, clients[p_idx].saved_pickup) == 0) {
+                px = city_map[i].x;
+                py = city_map[i].y;
+                break;
+            }
+        }
+
+        if (px < 0 || py < 0) {
+            dequeue_passenger();
+            send_error_msg(clients[p_idx].fd, "Queue dispatch failed: pickup location lost.");
+            clients[p_idx].status = STATUS_IDLE;
+            continue;
+        }
+
+        int driver_idx = -1;
+        float min_dist = -1.0f;
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (clients[i].fd != -1 &&
+                clients[i].role == ROLE_DRIVER &&
+                clients[i].status == STATUS_IDLE) {
+                float d = sqrtf(powf(clients[i].x - px, 2) + powf(clients[i].y - py, 2));
+                if (driver_idx == -1 || d < min_dist) {
+                    min_dist = d;
+                    driver_idx = i;
+                }
+            }
+        }
+
+        if (driver_idx == -1) {
+            break;
+        }
+
+        dequeue_passenger();
+
+        int order_id = next_order_id++;
+        clients[p_idx].status = STATUS_WAITING;
+        clients[p_idx].current_order_id = order_id;
+        clients[p_idx].peer_fd = clients[driver_idx].fd;
+        clients[p_idx].tried_count = 0;
+        memset(clients[p_idx].tried_drivers, 0, sizeof(clients[p_idx].tried_drivers));
+
+        clients[driver_idx].status = STATUS_ASSIGNED;
+        clients[driver_idx].current_order_id = order_id;
+        clients[driver_idx].peer_fd = clients[p_idx].fd;
+
+        ride_msg_t d_msg;
+        memset(&d_msg, 0, sizeof(d_msg));
+        d_msg.type = MSG_DISPATCH_JOB;
+        d_msg.order_id = order_id;
+        strncpy(d_msg.name, clients[p_idx].name, NAME_LEN - 1);
+        strncpy(d_msg.pickup, clients[p_idx].saved_pickup, LOC_LEN - 1);
+        strncpy(d_msg.dropoff, clients[p_idx].saved_dropoff, LOC_LEN - 1);
+
+        if (send_msg(clients[driver_idx].fd, &d_msg) < 0) {
+            perror("send MSG_DISPATCH_JOB (from queue)");
+            remove_client(driver_idx);
+            dispatch_to_next_driver(p_idx);
+        } else {
+            printf("Dispatched queued order %d to driver %s\n",
+                   order_id, clients[driver_idx].name);
+        }
+    }
+}
+
+
 
 static void handle_login(int idx, const ride_msg_t *msg) {
     clients[idx].role = (role_t)msg->role;
@@ -233,10 +365,13 @@ static void handle_login(int idx, const ride_msg_t *msg) {
         clients[idx].y = msg->y;
     }
     printf("Client fd=%d logged in as %s\n", clients[idx].fd, clients[idx].name);
-if (send_login_ack(clients[idx].fd) < 0) {
-    remove_client(idx);
-    return;
-}
+    if (send_login_ack(clients[idx].fd) < 0) {
+        remove_client(idx);
+        return;
+    }
+    if (clients[idx].role == ROLE_DRIVER) {
+        try_dispatch_from_queue();
+    }
 }
 
 static void handle_ride_request(int idx, const ride_msg_t *msg) {
@@ -291,7 +426,7 @@ static void handle_ride_request(int idx, const ride_msg_t *msg) {
     }
 
     if (driver_idx == -1) {
-        send_error_msg(clients[idx].fd, "No idle driver.");
+        enqueue_passenger(idx);
         return;
     }
 
@@ -336,6 +471,14 @@ static void handle_cancel_ride(int idx) {
         return;
     }
 
+    if (clients[idx].status == STATUS_QUEUED) {
+        remove_from_queue(idx);
+        set_client_idle(idx);
+        clients[idx].saved_pickup[0] = '\0';
+        clients[idx].saved_dropoff[0] = '\0';
+        return;
+    }
+
     if (clients[idx].status != STATUS_WAITING) {
         send_error_msg(clients[idx].fd, "Cancel is only allowed before driver arrival.");
         return;
@@ -347,6 +490,7 @@ static void handle_cancel_ride(int idx) {
         if (d_idx != -1) {
             send_error_msg(clients[d_idx].fd, "Passenger cancelled the request.");
             set_client_idle(d_idx);
+            try_dispatch_from_queue();
         }
     }
 
@@ -414,6 +558,7 @@ static void handle_reject(int idx) {
 
     set_client_idle(idx);
     dispatch_to_next_driver(p_idx);
+    try_dispatch_from_queue();
 }
 
 static void handle_update_pos(int idx, const ride_msg_t *msg) {
@@ -527,6 +672,7 @@ static void handle_arrived(int idx) {
     }
 
     set_client_idle(idx);
+    try_dispatch_from_queue();
 }
 
 static void handle_tip_selection(int idx, const ride_msg_t *msg) {
