@@ -19,7 +19,8 @@ typedef enum {
     STATUS_ASSIGNED = 2,
     STATUS_GOING_TO_PICKUP = 3,
     STATUS_IN_PROGRESS = 4,
-    STATUS_SETTLING = 5
+    STATUS_SETTLING = 5,
+    STATUS_QUEUED = 6
 } status_t;
 
 typedef enum {
@@ -39,7 +40,8 @@ typedef enum {
     MSG_TIP_SELECTION,
     MSG_FINAL_SETTLEMENT,
     MSG_ERROR,
-    MSG_LOGOUT
+    MSG_LOGOUT,
+    MSG_QUEUED
 } msg_type_t;
 
 typedef struct {
